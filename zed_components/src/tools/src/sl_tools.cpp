@@ -14,6 +14,7 @@
 
 #include <float.h>
 #include <sys/stat.h>
+#include <unistd.h> // getuid
 
 #include <sstream>
 #include <vector>
@@ -484,6 +485,40 @@ std::vector<std::vector<float>> parseStringVector(
   return result;
 }
 
+std::string threadSched2Str(int thread_sched_policy)
+{
+  switch (thread_sched_policy) {
+    case SCHED_OTHER:
+      return "SCHED_OTHER";
+    case SCHED_FIFO:
+      return "SCHED_FIFO";
+    case SCHED_RR:
+      return "SCHED_RR";
+#ifdef __USE_GNU
+    case SCHED_BATCH:
+      return "SCHED_BATCH";
+    case SCHED_ISO:
+      return "SCHED_ISO";
+    case SCHED_IDLE:
+      return "SCHED_IDLE";
+    case SCHED_DEADLINE:
+      return "SCHED_DEADLINE";
+#endif
+    default:
+      return "";
+  }
+}
+
+bool checkRoot()
+{
+  if (getuid()) {
+    return false;
+  } else {
+    return true;
+  }
+}
+
+
 bool isZED(sl::MODEL camModel)
 {
   if (camModel == sl::MODEL::ZED) {
@@ -542,11 +577,16 @@ void StopWatch::tic()
   mStartTime = mClockPtr->now();  // Reset the start time point
 }
 
-double StopWatch::toc()
+double StopWatch::toc(std::string func_name)
 {
   auto now = mClockPtr->now();
 
   double elapsed_nsec = (now - mStartTime).nanoseconds();
+  if (!func_name.empty()) {
+    std::cerr << func_name << " -> toc elapsed_sec: " << elapsed_nsec / 1e9 << std::endl <<
+      std::flush;
+  }
+
   return elapsed_nsec / 1e9;  // Returns elapsed time in seconds
 }
 

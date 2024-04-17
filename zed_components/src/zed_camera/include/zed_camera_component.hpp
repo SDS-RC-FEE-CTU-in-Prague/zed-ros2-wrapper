@@ -39,6 +39,7 @@ protected:
   // ----> Initialization functions
   void initParameters();
   void initServices();
+  void initThreads();
 
   void getDebugParams();
   void getSimParams();
@@ -51,6 +52,7 @@ protected:
   void getMappingParams();
   void getOdParams();
   void getBodyTrkParams();
+  void getAdvancedParams();
 
   void setTFCoordFrameNames();
   void initPublishers();
@@ -73,7 +75,6 @@ protected:
   // <---- Initialization functions
 
   // ----> Callbacks
-  void threadFunc_pubVideoDepth();
   void callback_pubFusedPc();
   void callback_pubPaths();
   void callback_pubTemp();
@@ -120,6 +121,7 @@ protected:
     std::shared_ptr<std_srvs::srv::Trigger_Response> res);
   void callback_clickedPoint(const geometry_msgs::msg::PointStamped::SharedPtr msg);
   void callback_gnssFix(const sensor_msgs::msg::NavSatFix::SharedPtr msg);
+  void callback_clock(const rosgraph_msgs::msg::Clock::SharedPtr msg);
   void callback_setRoi(
     const std::shared_ptr<rmw_request_id_t> request_header,
     const std::shared_ptr<zed_interfaces::srv::SetROI_Request> req,
@@ -243,6 +245,7 @@ private:
 
   // ----> Parameter variables
   bool mDebugCommon = false;
+  bool mDebugSim = false;
   bool mDebugVideoDepth = false;
   bool mDebugCamCtrl = false;
   bool mDebugPointCloud = false;
@@ -252,10 +255,13 @@ private:
   bool mDebugMapping = false;
   bool mDebugObjectDet = false;
   bool mDebugBodyTrk = false;
+  bool mDebugAdvanced = false;
 
-  int mCamId = 0;
   int mCamSerialNumber = 0;
-  std::string mSimAddr = "localhost";  // The local address of the machine running the simulator
+  bool mSimMode = false;  // Expecting simulation data?
+  bool mUseSimTime = false; // Use sim time?
+  std::string mSimAddr = "127.0.0.1";  // The local address of the machine running the simulator
+  int mSimPort = 30000; // The port to be used to connect to the simulator
   sl::MODEL mCamUserModel = sl::MODEL::ZED;  // Default camera model
   sl::MODEL mCamRealModel;                   // Camera model requested to SDK
   unsigned int mCamFwVersion;                // Camera FW version
@@ -267,6 +273,7 @@ private:
   bool mSvoRealtime = false;
   int mVerbose = 1;
   int mGpuId = -1;
+  std::string mOpencvCalibFile;
   sl::RESOLUTION mCamResol = sl::RESOLUTION::HD1080;  // Default resolution: RESOLUTION_HD1080
   PubRes mPubResolution = PubRes::NATIVE;   // Use native grab resolution by default
   double mCustomDownscaleFactor = 1.0; // Used to rescale data with user factor
@@ -286,12 +293,13 @@ private:
   double mSensPubRate = 400.;
   bool mPosTrackingEnabled = false;
 
-  bool mPublishTF = true;
-  bool mPublishMapTF = true;
-  bool mPublishImuTF = true;
+  bool mPublishTF = false;
+  bool mPublishMapTF = false;
+  bool mPublishImuTF = false;
   bool mPoseSmoothing = false;
   bool mAreaMemory = true;
   std::string mAreaMemoryDbPath = "";
+  sl::POSITIONAL_TRACKING_MODE mPosTrkMode = sl::POSITIONAL_TRACKING_MODE::QUALITY;
   bool mImuFusion = true;
   bool mFloorAlignment = false;
   bool mTwoDMode = false;
@@ -307,7 +315,16 @@ private:
   bool mPublishPoseCov = true;
   bool mGnssFusionEnabled = false;
   std::string mGnssTopic = "/gps/fix";
+#if (ZED_SDK_MINOR_VERSION == 0 && ZED_SDK_PATCH_VERSION < 6)
   double mGnssInitDistance = 5.0;
+#elif (ZED_SDK_MINOR_VERSION == 0 && ZED_SDK_PATCH_VERSION >= 6)
+  bool mGnssEnableReinitialization = true;
+  bool mGnssEnableRollingCalibration = true;
+  bool mGnssEnableTranslationUncertaintyTarget = false;
+  double mGnssVioReinitThreshold = 5.0;
+  double mGnssTargetTranslationUncertainty = 10e-2;
+  double mGnssTargetYawUncertainty = 0.1;
+#endif
   bool mGnssZeroAltitude = false;
   bool mPublishUtmTf = true;
   bool mUtmAsParent = true;
@@ -345,6 +362,11 @@ private:
   double mBodyTrkConfThresh = 50.0;
   int mBodyTrkMinKp = 10;
 
+  #if (ZED_SDK_MINOR_VERSION == 0 && ZED_SDK_PATCH_VERSION >= 6)
+  double mPdMaxDistanceThreshold = 0.15;
+  double mPdNormalSimilarityThreshold = 15.0;
+  #endif
+
   // TODO(Walter) remove QoS parameters, use instead the new ROS2 Humble QoS settings engine
 
   // QoS parameters
@@ -358,12 +380,18 @@ private:
   rclcpp::QoS mBodyTrkQos;
   rclcpp::QoS mClickedPtQos;
   rclcpp::QoS mGnssFixQos;
+  rclcpp::QoS mClockQos;
+
+  std::string mThreadSchedPolicy;
+  int mThreadPrioGrab;
+  int mThreadPrioSens;
+  int mThreadPrioPointCloud;
   // <---- Parameter variables
 
   // ----> Dynamic params
   OnSetParametersCallbackHandle::SharedPtr mParamChangeCallbackHandle;
 
-  double mPubFrameRate = 15;
+  double mPubFrameRate = 15.0;
   int mCamBrightness = 4;
   int mCamContrast = 4;
   int mCamHue = 0;
@@ -413,8 +441,8 @@ private:
   std::string mUtmFrameId = "utm";
   std::string mMapFrameId = "map";
   std::string mOdomFrameId = "odom";
-  std::string mBaseFrameId = "base_link";
-  std::string mGnssFrameId = "base_link";
+  std::string mBaseFrameId = "";
+  std::string mGnssFrameId = "";
 
   std::string mCameraFrameId;
 
@@ -458,9 +486,13 @@ private:
 
   // ----> TF Transforms Flags
   bool mSensor2BaseTransfValid = false;
+  bool mSensor2BaseTransfFirstErr = true;
   bool mSensor2CameraTransfValid = false;
+  bool mSensor2CameraTransfFirstErr = true;
   bool mCamera2BaseTransfValid = false;
+  bool mCamera2BaseFirstErr = true;
   bool mGnss2BaseTransfValid = false;
+  bool mGnss2BaseTransfFirstErr = true;
   bool mMap2UtmTransfValid = false;
 
   std::atomic_uint16_t mAiInstanceID;
@@ -567,6 +599,7 @@ private:
   // ----> Subscribers
   clickedPtSub mClickedPtSub;
   gnssFixSub mGnssFixSub;
+  clockSub mClockSub;
   // <---- Subscribers
 
   // ----> Threads and Timers
@@ -585,25 +618,19 @@ private:
   // <---- Threads and Timers
 
   // ----> Thread Sync
-  // std::mutex mCloseZedMutex;
-  std::mutex mVideoDepthMutex;
-  std::mutex mPcMutex;
   std::mutex mRecMutex;
   std::mutex mPosTrkMutex;
   std::mutex mDynParMutex;
   std::mutex mMappingMutex;
   std::mutex mObjDetMutex;
   std::mutex mBodyTrkMutex;
-  std::condition_variable mVideoDepthDataReadyCondVar;
+  std::mutex mPcMutex;
   std::condition_variable mPcDataReadyCondVar;
   std::atomic_bool mPcDataReady;
-  std::atomic_bool mVideoDepthDataReady;
   // <---- Thread Sync
 
   // ----> Status Flags
-  bool mSimEnabled = false;  // Expecting simulation data?
   bool mDebugMode = false;  // Debug mode active?
-  int mSimPort = 30000;
   bool mSvoMode = false;
   bool mSvoPause = false;
   bool mPosTrackingStarted = false;
@@ -616,7 +643,13 @@ private:
   bool mPosTrackingReady = false;
   sl::POSITIONAL_TRACKING_STATE mPosTrackingStatusWorld;
   sl::POSITIONAL_TRACKING_STATE mPosTrackingStatusCamera;
+
+#if (ZED_SDK_MINOR_VERSION == 0 && ZED_SDK_PATCH_VERSION < 6)
   sl::POSITIONAL_TRACKING_STATE mGeoPoseStatus;
+#elif (ZED_SDK_MINOR_VERSION == 0 && ZED_SDK_PATCH_VERSION >= 6)
+  sl::GNSS_CALIBRATION_STATE mGeoPoseStatus;
+#endif
+
   bool mResetOdom = false;
   bool mSpatialMappingRunning = false;
   bool mObjDetRunning = false;
@@ -626,6 +659,7 @@ private:
   bool mGnssFixValid = false; // Used to keep track of signal loss
   bool mGnssFixNew = false; // Used to keep track of signal loss
   std::string mGnssService = "";
+  std::atomic<bool> mClockAvailable; // Indicates if the "/clock" topic is published when `use_sim_time` is true
   // <---- Status Flags
 
   // ----> Positional Tracking
@@ -646,7 +680,7 @@ private:
   bool mGnssInitGood = false;
   // <---- Positional Tracking
 
-  // Diagnostic
+  // ----> Diagnostic
   float mTempImu = NOT_VALID_TEMP;
   float mTempLeft = NOT_VALID_TEMP;
   float mTempRight = NOT_VALID_TEMP;
@@ -676,9 +710,37 @@ private:
 
   diagnostic_updater::Updater mDiagUpdater;  // Diagnostic Updater
 
+  sl_tools::StopWatch mImuTfFreqTimer;
+  sl_tools::StopWatch mGrabFreqTimer;
+  sl_tools::StopWatch mImuFreqTimer;
+  sl_tools::StopWatch mBaroFreqTimer;
+  sl_tools::StopWatch mMagFreqTimer;
+  sl_tools::StopWatch mOdomFreqTimer;
+  sl_tools::StopWatch mPoseFreqTimer;
+  sl_tools::StopWatch mPcPubFreqTimer;
+  sl_tools::StopWatch mVdPubFreqTimer;
+  sl_tools::StopWatch mSensPubFreqTimer;
+  sl_tools::StopWatch mOdFreqTimer;
+  sl_tools::StopWatch mBtFreqTimer;
+  sl_tools::StopWatch mPcFreqTimer;
+  sl_tools::StopWatch mGnssFixFreqTimer;
+
+  int mSysOverloadCount = 0;
+  // <---- Diagnostic
+
   // ----> Timestamps
+  sl::Timestamp mLastTs_grab = 0;  // Used to calculate stable publish frequency
   rclcpp::Time mFrameTimestamp;
   rclcpp::Time mGnssTimestamp;
+  rclcpp::Time mLastTs_imu;
+  rclcpp::Time mLastTs_baro;
+  rclcpp::Time mLastTs_mag;
+  rclcpp::Time mLastTs_odom;
+  rclcpp::Time mLastTs_pose;
+  rclcpp::Time mLastTs_pc;
+  rclcpp::Time mPrevTs_pc;
+  uint64_t mLastTs_gnss_nsec = 0;
+  rclcpp::Time mLastClock;
   // <---- Timestamps
 
   // ----> SVO Recording parameters

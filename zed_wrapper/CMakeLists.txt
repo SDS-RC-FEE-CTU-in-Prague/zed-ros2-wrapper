@@ -32,6 +32,9 @@ if(ROS2_FOUND)
   if(${FOUND_ROS2_DISTRO} STREQUAL "foxy")
     #message("* ROS2 ${FOUND_ROS2_DISTRO} is officially supported by this package.")
     add_definitions(-DFOUND_FOXY)
+  elseif(${FOUND_ROS2_DISTRO} STREQUAL "iron")
+    #message("* ROS2 ${FOUND_ROS2_DISTRO} is officially supported by this package.")
+    add_definitions(-DFOUND_IRON)
   elseif(${FOUND_ROS2_DISTRO} STREQUAL "humble")
     #message("* ROS2 ${FOUND_ROS2_DISTRO} is officially supported by this package.")
     add_definitions(-DFOUND_HUMBLE)
@@ -75,7 +78,7 @@ endif()
 
 #############################################
 # Dependencies
-find_package(ZED 3 REQUIRED)
+find_package(ZED 4 REQUIRED)
 find_package(CUDA REQUIRED)
 
 find_package(ament_cmake_auto REQUIRED)
